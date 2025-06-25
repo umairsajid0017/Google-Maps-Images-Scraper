@@ -4,6 +4,7 @@ import logging
 import argparse
 import requests
 import csv
+import json
 import threading
 from datetime import datetime
 from selenium import webdriver
@@ -125,17 +126,77 @@ class GoogleMapsImageScraper:
         # Enable user agent to avoid detection
         chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
         
-        # Initialize WebDriver with Chrome
+        # Initialize WebDriver with multiple fallback approaches
+        self.driver = None
+        initialization_error = None
+        
+        # Approach 1: Try with webdriver-manager but fix the path
         try:
+            chrome_driver_path = ChromeDriverManager().install()
+            
+            # Fix the common webdriver-manager path issue
+            if "THIRD_PARTY_NOTICES" in chrome_driver_path or not chrome_driver_path.endswith(".exe"):
+                # Try to find the actual chromedriver.exe in the same directory
+                import glob
+                driver_dir = os.path.dirname(chrome_driver_path)
+                possible_paths = glob.glob(os.path.join(driver_dir, "**/chromedriver.exe"), recursive=True)
+                if possible_paths:
+                    chrome_driver_path = possible_paths[0]
+                    logger.info(f"Fixed ChromeDriver path to: {chrome_driver_path}")
+                else:
+                    # Try parent directories
+                    parent_dir = os.path.dirname(driver_dir)
+                    possible_paths = glob.glob(os.path.join(parent_dir, "**/chromedriver.exe"), recursive=True)
+                    if possible_paths:
+                        chrome_driver_path = possible_paths[0]
+                        logger.info(f"Found ChromeDriver in parent directory: {chrome_driver_path}")
+                    else:
+                        raise Exception("Could not locate chromedriver.exe")
+            
             self.driver = webdriver.Chrome(
-                service=Service(ChromeDriverManager().install()),
+                service=Service(chrome_driver_path),
                 options=chrome_options
             )
             self.driver.maximize_window()
-            logger.info("WebDriver initialized successfully")
-        except WebDriverException as e:
-            logger.error(f"Failed to initialize WebDriver: {str(e)}")
-            raise
+            logger.info("WebDriver initialized successfully with fixed path")
+            
+        except Exception as e:
+            initialization_error = str(e)
+            logger.warning(f"First WebDriver approach failed: {initialization_error}")
+            
+            # Approach 2: Try without webdriver-manager (use Chrome from PATH)
+            try:
+                logger.info("Trying WebDriver initialization without webdriver-manager...")
+                self.driver = webdriver.Chrome(options=chrome_options)
+                self.driver.maximize_window()
+                logger.info("WebDriver initialized successfully without webdriver-manager")
+                
+            except Exception as e2:
+                initialization_error = str(e2)
+                logger.warning(f"Second WebDriver approach failed: {initialization_error}")
+                
+                # Approach 3: Try downloading ChromeDriver manually
+                try:
+                    logger.info("Attempting manual ChromeDriver download...")
+                    manual_driver_path = self._download_chromedriver_manually()
+                    
+                    if manual_driver_path and os.path.exists(manual_driver_path):
+                        self.driver = webdriver.Chrome(
+                            service=Service(manual_driver_path),
+                            options=chrome_options
+                        )
+                        self.driver.maximize_window()
+                        logger.info("WebDriver initialized successfully with manual ChromeDriver")
+                    else:
+                        raise Exception("Manual ChromeDriver download failed")
+                        
+                except Exception as e3:
+                    initialization_error = str(e3)
+                    logger.error(f"All WebDriver initialization approaches failed. Last error: {initialization_error}")
+                    raise WebDriverException(f"Failed to initialize WebDriver after all attempts. Error: {initialization_error}")
+        
+        if self.driver is None:
+            raise WebDriverException(f"Failed to initialize WebDriver. Error: {initialization_error}")
             
     def create_csv_file(self, location_name):
         """
@@ -193,6 +254,79 @@ class GoogleMapsImageScraper:
         except Exception as e:
             logger.error(f"Error saving URL to CSV: {str(e)}")
             return False
+        
+    def _download_chromedriver_manually(self):
+        """
+        Manually download ChromeDriver as a fallback
+        
+        Returns:
+            str: Path to chromedriver executable or None if failed
+        """
+        try:
+            import requests
+            import zipfile
+            import platform
+            
+            # Create drivers directory if it doesn't exist
+            drivers_dir = os.path.join(os.getcwd(), "drivers")
+            if not os.path.exists(drivers_dir):
+                os.makedirs(drivers_dir)
+            
+            # Check if we already have a working chromedriver
+            chromedriver_path = os.path.join(drivers_dir, "chromedriver.exe")
+            if os.path.exists(chromedriver_path):
+                logger.info("Found existing chromedriver.exe")
+                return chromedriver_path
+            
+            logger.info("Downloading ChromeDriver manually...")
+            
+            # Get the appropriate ChromeDriver version
+            # Using a stable version that should work
+            version = "131.0.6778.87"  # A stable version
+            
+            # Determine architecture
+            if platform.machine().endswith('64'):
+                url = f"https://storage.googleapis.com/chrome-for-testing-public/{version}/win64/chromedriver-win64.zip"
+                folder_name = "chromedriver-win64"
+            else:
+                url = f"https://storage.googleapis.com/chrome-for-testing-public/{version}/win32/chromedriver-win32.zip"
+                folder_name = "chromedriver-win32"
+            
+            # Download the zip file
+            response = requests.get(url, timeout=60)
+            response.raise_for_status()
+            
+            zip_path = os.path.join(drivers_dir, "chromedriver.zip")
+            with open(zip_path, 'wb') as f:
+                f.write(response.content)
+            
+            # Extract the zip file
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(drivers_dir)
+            
+            # Move the chromedriver.exe to the drivers directory
+            extracted_driver = os.path.join(drivers_dir, folder_name, "chromedriver.exe")
+            if os.path.exists(extracted_driver):
+                # Move to drivers directory root
+                final_path = os.path.join(drivers_dir, "chromedriver.exe")
+                if os.path.exists(final_path):
+                    os.remove(final_path)
+                os.rename(extracted_driver, final_path)
+                
+                # Clean up
+                os.remove(zip_path)
+                import shutil
+                shutil.rmtree(os.path.join(drivers_dir, folder_name))
+                
+                logger.info(f"ChromeDriver downloaded successfully to: {final_path}")
+                return final_path
+            else:
+                logger.error(f"Could not find chromedriver.exe in extracted files")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to download ChromeDriver manually: {str(e)}")
+            return None
             
     def _is_in_gallery_view(self):
         """
@@ -406,13 +540,14 @@ class GoogleMapsImageScraper:
             logger.error(f"Error opening photos section: {str(e)}")
             return False
 
-    def extract_image_urls(self, max_images=None, location_name=None):
+    def extract_image_urls(self, max_images=None, location_name=None, show_progress=False):
         """
         Extract all image URLs from the photos section
         
         Args:
             max_images (int, optional): Maximum number of images to extract
             location_name (str, optional): Name of the location for CSV
+            show_progress (bool): Whether to show detailed progress logging
             
         Returns:
             list: List of image URLs
@@ -427,10 +562,16 @@ class GoogleMapsImageScraper:
         csv_path = None
         if self.save_csv and location_name:
             csv_path = self.create_csv_file(location_name)
-            print(f"Creating CSV file at: {csv_path}")
+            if show_progress:
+                print(f"Creating CSV file at: {csv_path}")
             logger.info(f"Creating CSV file at: {csv_path}")
         
         logger.info("Starting to extract image URLs")
+        if show_progress:
+            if max_images:
+                print(f"Extracting up to {max_images} images...")
+            else:
+                print(f"Extracting all available images...")
         
         # First check if we need to click on an image to open the gallery
         gallery_attempt = 0
@@ -531,12 +672,23 @@ class GoogleMapsImageScraper:
             logger.warning("Could not enter gallery view, attempting to extract images directly")
             direct_urls = self._extract_images_direct()
             
-            # Save direct URLs to CSV if needed
-            if csv_path and direct_urls:
-                for i, url in enumerate(direct_urls):
-                    self.save_url_to_csv(csv_path, url, i+1)
+            # Show progress for direct extraction
+            if show_progress and direct_urls:
+                for i, url in enumerate(direct_urls, 1):
+                    if max_images:
+                        print(f"Images Extracted: {i}/{min(max_images, len(direct_urls))}")
+                    else:
+                        print(f"Images Extracted: {i}")
                     
-            return direct_urls
+                    # Save direct URLs to CSV if needed
+                    if csv_path:
+                        self.save_url_to_csv(csv_path, url, i)
+                        
+                    # Stop if we've reached max_images
+                    if max_images and i >= max_images:
+                        break
+            
+            return direct_urls[:max_images] if max_images else direct_urls
         
         logger.info("Successfully entered gallery view, beginning image extraction")
         
@@ -602,14 +754,21 @@ class GoogleMapsImageScraper:
                                     image_urls.add(high_res_url)
                                     logger.debug(f"Added image URL: {high_res_url}")
                                     
+                                    # Show progress
+                                    if show_progress:
+                                        if max_images:
+                                            print(f"Images Extracted: {url_index}/{max_images}")
+                                        else:
+                                            print(f"Images Extracted: {url_index}")
+                                    
                                     # Save URL to CSV in real-time
                                     if csv_path:
                                         self.save_url_to_csv(csv_path, high_res_url, url_index)
-                                        url_index += 1
                                         
-                                found_image = True
-                                consecutive_errors = 0  # Reset error counter on success
-                                break
+                                    url_index += 1
+                                    found_image = True
+                                    consecutive_errors = 0  # Reset error counter on success
+                                    break
                     except Exception as e:
                         logger.debug(f"Error with image selector {selector}: {str(e)}")
                         continue
@@ -632,13 +791,20 @@ class GoogleMapsImageScraper:
                                 if high_res_url not in image_urls:
                                     image_urls.add(high_res_url)
                                     
+                                    # Show progress
+                                    if show_progress:
+                                        if max_images:
+                                            print(f"Images Extracted: {url_index}/{max_images}")
+                                        else:
+                                            print(f"Images Extracted: {url_index}")
+                                    
                                     # Save URL to CSV in real-time
                                     if csv_path:
                                         self.save_url_to_csv(csv_path, high_res_url, url_index)
-                                        url_index += 1
                                         
-                                found_image = True
-                                consecutive_errors = 0  # Reset error counter on success
+                                    url_index += 1
+                                    found_image = True
+                                    consecutive_errors = 0  # Reset error counter on success
                     except Exception as e:
                         logger.debug(f"JavaScript image extraction failed: {str(e)}")
                 
@@ -652,6 +818,8 @@ class GoogleMapsImageScraper:
                 # Check if we've reached the max number of images
                 if max_images and len(image_urls) >= max_images:
                     logger.info(f"Reached maximum number of images: {max_images}")
+                    if show_progress:
+                        print(f"Reached maximum limit of {max_images} images")
                     break
                 
                 # Try different selectors for the next button
@@ -715,6 +883,8 @@ class GoogleMapsImageScraper:
                 
                 if not next_clicked:
                     logger.info("Could not find or click next button, assuming end of gallery")
+                    if show_progress:
+                        print(f"Reached end of gallery - no more images available")
                     break
                 
                 # Check if we're still finding new images
@@ -728,6 +898,8 @@ class GoogleMapsImageScraper:
                 # If we're not finding new images after multiple attempts, we've likely reached the end
                 if scroll_attempts >= max_scroll_attempts:
                     logger.info("No new images found after multiple attempts, stopping extraction")
+                    if show_progress:
+                        print(f"No new images found - extraction complete")
                     break
                     
             except StaleElementReferenceException:
@@ -1019,15 +1191,262 @@ class GoogleMapsImageScraper:
         finally:
             # Close the browser
             self.close()
+                
+    def extract_urls_only(self, location_name, max_images=None, show_progress=False):
+        """
+        Extract image URLs for a location without downloading
+        
+        Args:
+            location_name (str): Name of the location to search
+            max_images (int, optional): Maximum number of images to extract
+            show_progress (bool): Whether to show detailed progress logging
+            
+        Returns:
+            list: List of image URLs, empty list if failed
+        """
+        try:
+            logger.info(f"Extracting URLs for: {location_name}")
+            
+            # Search for the location
+            if not self.search_location(location_name):
+                logger.warning(f"Failed to find location: {location_name}")
+                return []
+                
+            # Wait for the location page to load
+            time.sleep(3)
+            
+            # Open photos section
+            if not self.open_photos_section():
+                logger.warning(f"Failed to open photos section for: {location_name}")
+                return []
+                
+            # Extract image URLs (without CSV saving)
+            original_save_csv = self.save_csv
+            self.save_csv = False  # Temporarily disable CSV
+            
+            image_urls = self.extract_image_urls(max_images, location_name, show_progress)
+            
+            self.save_csv = original_save_csv  # Restore original setting
+            
+            if image_urls:
+                logger.info(f"Found {len(image_urls)} images for {location_name}")
+            else:
+                logger.warning(f"No images found for {location_name}")
+                
+            return image_urls
+            
+        except Exception as e:
+            logger.error(f"Error extracting URLs for {location_name}: {str(e)}")
+            return []
 
+    def process_locations_list(self, locations_list, max_images=None, show_progress=True):
+        """
+        Process a list of locations and extract image URLs
+        
+        Args:
+            locations_list (list): List of location names (strings)
+            max_images (int, optional): Maximum number of images per location
+            show_progress (bool): Whether to show detailed progress logging
+            
+        Returns:
+            list: Results in JSON format with location names and image URLs
+        """
+        results = []
+        
+        if not isinstance(locations_list, list):
+            logger.error("Input must be a list of location names")
+            return results
+        
+        total_locations = len(locations_list)
+        print(f"Processing {total_locations} locations")
+        print("-" * 50)
+        
+        for i, location_name in enumerate(locations_list, 1):
+            if not isinstance(location_name, str):
+                logger.warning(f"Invalid location type at index {i-1}: {type(location_name)}. Skipping.")
+                continue
+                
+            location_name = location_name.strip()
+            if not location_name:
+                logger.warning(f"Empty location name at index {i-1}. Skipping.")
+                continue
+                
+            print(f"\n[{i}/{total_locations}] Processing: {location_name}")
+            logger.info(f"Processing location {i}/{total_locations}: {location_name}")
+            
+            try:
+                # Extract URLs for this location with progress tracking
+                image_urls = self.extract_urls_only(location_name, max_images, show_progress)
+                
+                location_result = {
+                    "location_name": location_name,
+                    "image_urls": image_urls,
+                    "images_found": len(image_urls)
+                }
+                results.append(location_result)
+                
+                print(f"Completed: {len(image_urls)} images found for '{location_name}'")
+                
+                # Small delay between locations to avoid being blocked
+                if i < total_locations:  # Don't delay after the last location
+                    print(f"Waiting 3 seconds before next location...")
+                    time.sleep(3)
+                
+            except Exception as e:
+                logger.error(f"Error processing {location_name}: {str(e)}")
+                # Add entry with empty results for failed locations
+                location_result = {
+                    "location_name": location_name,
+                    "image_urls": [],
+                    "images_found": 0,
+                    "error": str(e)
+                }
+                results.append(location_result)
+                print(f"Error processing '{location_name}': {str(e)}")
+        
+        return results
 
+    def save_results_to_json(self, results, output_file):
+        """
+        Save results to a JSON file
+        
+        Args:
+            results (list): Results data to save
+            output_file (str): Path to output JSON file
+            
+        Returns:
+            bool: True if saved successfully, False otherwise
+        """
+        try:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(results, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Results saved to {output_file}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving results to JSON: {str(e)}")
+            return False
+
+    def batch_extract_urls_from_list(self, locations_list, output_file=None, max_images=None, show_progress=True):
+        """
+        Main method for batch processing a list of locations
+        
+        Args:
+            locations_list (list): List of location names (strings)
+            output_file (str, optional): Path to output JSON file for results
+            max_images (int, optional): Maximum images per location
+            show_progress (bool): Whether to show detailed progress logging
+            
+        Returns:
+            dict: Dictionary containing results and summary info
+        """
+        try:
+            print(f"Starting batch URL extraction for {len(locations_list)} locations")
+            if output_file:
+                print(f"Output file: {output_file}")
+            if max_images:
+                print(f"Max images per location: {max_images}")
+            else:
+                print(f"Max images per location: No limit (all available)")
+            print("-" * 70)
+            
+            # Process all locations
+            results = self.process_locations_list(locations_list, max_images, show_progress)
+            
+            # Calculate summary statistics
+            total_locations = len(results)
+            successful_locations = len([r for r in results if r["images_found"] > 0])
+            total_images = sum(r["images_found"] for r in results)
+            failed_locations = len([r for r in results if "error" in r])
+            
+            summary = {
+                "total_locations_processed": total_locations,
+                "successful_locations": successful_locations,
+                "failed_locations": failed_locations,
+                "total_images_found": total_images,
+                "average_images_per_location": round(total_images / max(successful_locations, 1), 2)
+            }
+            
+            # Prepare final output
+            output_data = {
+                "summary": summary,
+                "locations": results
+            }
+            
+            # Save to file if specified
+            if output_file:
+                if self.save_results_to_json(output_data, output_file):
+                    print(f"\nResults saved to: {output_file}")
+                else:
+                    print("\nFailed to save results to file")
+            
+            # Print summary
+            print(f"\nFinal Summary:")
+            print(f"  • Total locations processed: {total_locations}")
+            print(f"  • Successful extractions: {successful_locations}")
+            print(f"  • Failed extractions: {failed_locations}")
+            print(f"  • Total images found: {total_images}")
+            print(f"  • Average images per successful location: {summary['average_images_per_location']}")
+            
+            if failed_locations > 0:
+                print(f"\nFailed locations:")
+                for result in results:
+                    if "error" in result:
+                        print(f"    • {result['location_name']}: {result['error']}")
+            
+            return output_data
+            
+        except Exception as e:
+            logger.error(f"Error during batch processing: {str(e)}")
+            print(f"Batch processing failed: {str(e)}")
+            return {"summary": {"total_locations_processed": 0, "successful_locations": 0, "failed_locations": 0, "total_images_found": 0}, "locations": []}
+        finally:
+            self.close()
+
+def scrape_locations_list(locations_list, output_file=None, max_images=None, headless=True, timeout=30, show_progress=True):
+    """
+    Standalone function to scrape image URLs from a list of locations
+    
+    Args:
+        locations_list (list): List of location names (strings)
+        output_file (str, optional): Path to save JSON results
+        max_images (int, optional): Maximum images per location
+        headless (bool): Run browser in headless mode
+        timeout (int): Timeout for WebDriver operations
+        show_progress (bool): Whether to show detailed progress logging
+        
+    Returns:
+        dict: Results with summary and location data
+    """
+    scraper = None
+    try:
+        # Initialize scraper
+        scraper = GoogleMapsImageScraper(
+            headless=headless,
+            timeout=timeout,
+            save_csv=False  # Don't save CSV for batch processing
+        )
+        
+        # Process the list
+        return scraper.batch_extract_urls_from_list(locations_list, output_file, max_images, show_progress)
+        
+    except Exception as e:
+        logger.error(f"Error in scrape_locations_list: {str(e)}")
+        return {"summary": {"total_locations_processed": 0, "successful_locations": 0, "failed_locations": 0, "total_images_found": 0}, "locations": []}
+    finally:
+        if scraper:
+            scraper.close()
+                
 def main():
     """Main function to run the scraper from command line"""
     parser = argparse.ArgumentParser(description='Google Maps Image Scraper')
-    parser.add_argument('location', type=str, help='Location name to search for')
+    parser.add_argument('location', type=str, nargs='?', help='Location name to search for (for single location mode)')
+    parser.add_argument('--list-input', type=str, help='Comma-separated list of locations for batch processing')
+    parser.add_argument('--output-json', type=str, help='Output JSON file for results (for batch mode)')
     parser.add_argument('--headless', action='store_true', help='Run browser in headless mode')
     parser.add_argument('--download-dir', type=str, default='downloaded_images', help='Directory to save downloaded images')
-    parser.add_argument('--max-images', type=int, default=None, help='Maximum number of images to download')
+    parser.add_argument('--max-images', type=int, default=None, help='Maximum number of images to download/extract')
     parser.add_argument('--max-workers', type=int, default=5, help='Maximum number of worker threads for downloading')
     parser.add_argument('--timeout', type=int, default=30, help='Timeout in seconds for WebDriverWait')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode with more detailed logs')
@@ -1035,6 +1454,7 @@ def main():
     parser.add_argument('--retry-attempts', type=int, default=3, help='Number of retry attempts for each step')
     parser.add_argument('--no-csv', action='store_true', help='Disable saving URLs to CSV file')
     parser.add_argument('--only-csv', action='store_true', help='Only save URLs to CSV, don\'t download images')
+    parser.add_argument('--urls-only', action='store_true', help='Only extract URLs to JSON, don\'t download images')
     
     args = parser.parse_args()
     
@@ -1046,6 +1466,34 @@ def main():
     # Determine headless mode
     use_headless = args.headless and not args.no_headless
     
+    # Check for list input mode
+    if args.list_input:
+        # Parse the comma-separated list
+        locations_list = [loc.strip() for loc in args.list_input.split(',') if loc.strip()]
+        
+        if not locations_list:
+            print("No valid locations found in list input")
+            return 1
+            
+        print(f"Batch mode: Processing {len(locations_list)} locations")
+        
+        # Use the standalone function
+        results = scrape_locations_list(
+            locations_list,
+            args.output_json,
+            args.max_images,
+            use_headless,
+            args.timeout
+        )
+        
+        return 0 if results["summary"]["total_locations_processed"] > 0 else 1
+    
+    elif not args.location:
+        print("Either provide a location name or use --list-input for batch processing")
+        print("Example: python script.py --list-input 'Eiffel Tower,Big Ben,Statue of Liberty' --output-json results.json")
+        return 1
+    
+    # Single location mode (existing functionality)
     try:
         print(f"Initializing scraper for: {args.location}")
         print(f"Browser mode: {'Headless' if use_headless else 'Visible'}")
@@ -1068,13 +1516,36 @@ def main():
             if attempts > 0:
                 print(f"Retry attempt {attempts}/{args.retry_attempts}...")
                 
-            success, downloaded_count = scraper.scrape_location_images(
-                args.location,
-                max_images=args.max_images,
-                max_workers=0 if args.only_csv else args.max_workers  # Don't download if only-csv mode
-            )
+            if args.urls_only:
+                # Only extract URLs
+                image_urls = scraper.extract_urls_only(args.location, args.max_images)
+                if image_urls:
+                    # Save to JSON format
+                    results = {
+                        "summary": {"total_locations_processed": 1, "successful_locations": 1, "total_images_found": len(image_urls)},
+                        "locations": [{
+                            "location_name": args.location,
+                            "image_urls": image_urls,
+                            "images_found": len(image_urls)
+                        }]
+                    }
+                    output_file = args.output_json or f"{scraper._sanitize_filename(args.location)}_urls.json"
+                    if scraper.save_results_to_json(results, output_file):
+                        print(f"Extracted {len(image_urls)} URLs and saved to: {output_file}")
+                        success = True
+                    else:
+                        print("Failed to save URLs to JSON")
+                else:
+                    print("No URLs found")
+            else:
+                # Original functionality with downloading
+                success, downloaded_count = scraper.scrape_location_images(
+                    args.location,
+                    max_images=args.max_images,
+                    max_workers=0 if args.only_csv else args.max_workers
+                )
             
-            if success and (downloaded_count > 0 or args.only_csv):
+            if success and (downloaded_count > 0 or args.only_csv or args.urls_only):
                 break
                 
             attempts += 1
@@ -1090,37 +1561,8 @@ def main():
                     save_csv=not args.no_csv
                 )
         
-        # Print result
-        location_dir = os.path.abspath(os.path.join(args.download_dir, scraper._sanitize_filename(args.location)))
+        return 0 if success else 1
         
-        if success:
-            if args.only_csv:
-                # In CSV-only mode, look for the CSV file to report success
-                csv_files = [f for f in os.listdir(location_dir) if f.endswith('.csv')] if os.path.exists(location_dir) else []
-                if csv_files:
-                    csv_path = os.path.join(location_dir, csv_files[0])
-                    # Count lines in CSV (minus header)
-                    with open(csv_path, 'r', encoding='utf-8') as f:
-                        url_count = sum(1 for _ in f) - 1  # Subtract 1 for header
-                    print(f"Scraping completed successfully. Saved {url_count} image URLs to CSV.")
-                    print(f"CSV file saved to: {csv_path}")
-                else:
-                    print(f"Scraping completed, but no CSV file was created.")
-            else:
-                print(f"Scraping completed successfully. Downloaded {downloaded_count} images.")
-                if not args.no_csv:
-                    csv_files = [f for f in os.listdir(location_dir) if f.endswith('.csv')] if os.path.exists(location_dir) else []
-                    if csv_files:
-                        print(f"Image URLs also saved to: {os.path.join(location_dir, csv_files[0])}")
-                print(f"Images saved to: {location_dir}")
-            return 0
-        else:
-            if success:
-                print(f"Scraping completed, but no images were found for: {args.location}")
-            else:
-                print(f"Scraping failed after {args.retry_attempts} attempts. Check logs for details.")
-            return 1
-            
     except KeyboardInterrupt:
         print("\nScraping interrupted by user.")
         return 1
@@ -1128,7 +1570,6 @@ def main():
         print(f"An error occurred: {str(e)}")
         logger.exception("Unhandled exception in main")
         return 1
-
 
 if __name__ == "__main__":
     exit_code = main()

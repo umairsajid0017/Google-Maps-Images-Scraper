@@ -1,0 +1,26 @@
+[
+    {
+        "country": "Afghanistan",
+        "famousLocations": [
+            "Babur Gardens",
+            "Band-e Amir National Park",
+            "Herat Citadel"
+        ]
+    },
+    {
+        "country": "Albania",
+        "famousLocations": [
+            "Butrint National Park",
+            "Skanderbeg Square",
+            "Blue Eye Spring"
+        ]
+    },
+    {
+        "country": "Australia",
+        "famousLocations": [
+            "Sydney Opera House",
+            "Uluru",
+            "Great Barrier Reef"
+        ]
+    }
+]

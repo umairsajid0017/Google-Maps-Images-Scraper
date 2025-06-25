@@ -1,1 +1,3 @@
-gmaps_scraper.log
+*.log
+downloaded_images/
+__pycache__/
