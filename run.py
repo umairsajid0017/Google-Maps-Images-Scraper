@@ -12,6 +12,11 @@ from datetime import datetime
 import logging
 
 # Import the scraper module
+import os
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.insert(0, script_dir)
+
 try:
     from google_maps_image_scraper import scrape_locations_list
 except ImportError:
@@ -220,7 +225,8 @@ def main():
     
     # Generate output filename with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    input_name = args.input_file.replace('.json', '').replace('countries_locations_', '').replace('countries_', '')
+    input_base = os.path.basename(args.input_file)
+    input_name = input_base.replace('.json', '').replace('countries_locations_', '').replace('countries_', '')
     output_file = f"images_{input_name}_{timestamp}.json"
     
     # Process all countries

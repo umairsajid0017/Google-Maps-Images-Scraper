@@ -540,7 +540,7 @@ class GoogleMapsImageScraper:
             logger.error(f"Error opening photos section: {str(e)}")
             return False
 
-    def extract_image_urls(self, max_images=None, location_name=None, show_progress=False):
+    def extract_image_urls(self, max_images=None, location_name=None, show_progress=False, callback=None):
         """
         Extract all image URLs from the photos section
         
@@ -670,7 +670,7 @@ class GoogleMapsImageScraper:
         # If we still aren't in gallery view after all retries, use an alternative approach
         if not self._is_in_gallery_view():
             logger.warning("Could not enter gallery view, attempting to extract images directly")
-            direct_urls = self._extract_images_direct()
+            direct_urls = self._extract_images_direct(csv_path, callback)
             
             # Show progress for direct extraction
             if show_progress and direct_urls:
@@ -746,12 +746,14 @@ class GoogleMapsImageScraper:
                             
                             # Add high-resolution version of image URL
                             if current_url and "googleusercontent.com" in current_url:
-                                # Transform URL to get the highest resolution
-                                high_res_url = re.sub(r'=w\d+-h\d+', '=w0-h0', current_url)
+                                # Transform URL to get the highest resolution (w0-h0-k-no gets original image size with no restrictions)
+                                high_res_url = re.sub(r'=(w\d+-h\d+|w\d+|h\d+|s\d+)(.*)', '=w0-h0-k-no', current_url)
                                 
                                 # Only add if it's a new URL
                                 if high_res_url not in image_urls:
                                     image_urls.add(high_res_url)
+                                    if callback:
+                                        callback(high_res_url)
                                     logger.debug(f"Added image URL: {high_res_url}")
                                     
                                     # Show progress
@@ -785,11 +787,14 @@ class GoogleMapsImageScraper:
                         
                         for url in all_imgs:
                             if "googleusercontent.com" in url:
-                                high_res_url = re.sub(r'=w\d+-h\d+', '=w0-h0', url)
+                                # Transform URL to get the highest resolution (w0-h0-k-no gets original image size with no restrictions)
+                                high_res_url = re.sub(r'=(w\d+-h\d+|w\d+|h\d+|s\d+)(.*)', '=w0-h0-k-no', url)
                                 
                                 # Only add if it's a new URL
                                 if high_res_url not in image_urls:
                                     image_urls.add(high_res_url)
+                                    if callback:
+                                        callback(high_res_url)
                                     
                                     # Show progress
                                     if show_progress:
@@ -924,12 +929,13 @@ class GoogleMapsImageScraper:
             
         return list(image_urls)
         
-    def _extract_images_direct(self, csv_path=None):
+    def _extract_images_direct(self, csv_path=None, callback=None):
         """
         Alternative method to extract images directly from the page without gallery navigation
         
         Args:
             csv_path (str, optional): Path to CSV file to save URLs
+            callback (callable, optional): Callback function for each new image URL
             
         Returns:
             list: List of image URLs
@@ -948,8 +954,12 @@ class GoogleMapsImageScraper:
             
             for url in js_images:
                 if "googleusercontent.com" in url:
-                    high_res_url = re.sub(r'=w\d+-h\d+', '=w0-h0', url)
-                    image_urls.add(high_res_url)
+                    # Transform URL to get the highest resolution (w0-h0-k-no gets original image size with no restrictions)
+                    high_res_url = re.sub(r'=(w\d+-h\d+|w\d+|h\d+|s\d+)(.*)', '=w0-h0-k-no', url)
+                    if high_res_url not in image_urls:
+                        image_urls.add(high_res_url)
+                        if callback:
+                            callback(high_res_url)
                     
                     # Save to CSV if needed
                     if csv_path:
@@ -975,9 +985,12 @@ class GoogleMapsImageScraper:
                                 if element.is_displayed():
                                     url = element.get_attribute("src")
                                     if url and "googleusercontent.com" in url:
-                                        high_res_url = re.sub(r'=w\d+-h\d+', '=w0-h0', url)
+                                        # Transform URL to get the highest resolution (w0-h0-k-no gets original image size with no restrictions)
+                                        high_res_url = re.sub(r'=(w\d+-h\d+|w\d+|h\d+|s\d+)(.*)', '=w0-h0-k-no', url)
                                         if high_res_url not in image_urls:
                                             image_urls.add(high_res_url)
+                                            if callback:
+                                                callback(high_res_url)
                                             
                                             # Save to CSV if needed
                                             if csv_path:
@@ -1192,7 +1205,7 @@ class GoogleMapsImageScraper:
             # Close the browser
             self.close()
                 
-    def extract_urls_only(self, location_name, max_images=None, show_progress=False):
+    def extract_urls_only(self, location_name, max_images=None, show_progress=False, callback=None):
         """
         Extract image URLs for a location without downloading
         
@@ -1200,6 +1213,7 @@ class GoogleMapsImageScraper:
             location_name (str): Name of the location to search
             max_images (int, optional): Maximum number of images to extract
             show_progress (bool): Whether to show detailed progress logging
+            callback (callable, optional): Callback function for each new image URL
             
         Returns:
             list: List of image URLs, empty list if failed
@@ -1224,7 +1238,7 @@ class GoogleMapsImageScraper:
             original_save_csv = self.save_csv
             self.save_csv = False  # Temporarily disable CSV
             
-            image_urls = self.extract_image_urls(max_images, location_name, show_progress)
+            image_urls = self.extract_image_urls(max_images, location_name, show_progress, callback=callback)
             
             self.save_csv = original_save_csv  # Restore original setting
             
