@@ -2,3 +2,4 @@
 downloaded_images/
 __pycache__/
 downloaded_images/
+drivers/chromedriver.exe

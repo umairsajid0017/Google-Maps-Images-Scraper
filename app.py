@@ -48,24 +48,24 @@ def _run_next_from_queue():
     semaphore slot is immediately reused.
     """
     try:
-        location, max_images = pending_queue.get_nowait()
-        app.logger.info(f"[QUEUE] Dequeued '{location}', starting now.")
-        _start_scrape_thread(location, max_images)
+        location, max_images, skip_images = pending_queue.get_nowait()
+        app.logger.info(f"[QUEUE] Dequeued '{location}' (skip_images={skip_images}), starting now.")
+        _start_scrape_thread(location, max_images, skip_images)
     except queue.Empty:
         pass  # Nothing waiting — semaphore slot stays free
 
 
-def _start_scrape_thread(location, max_images):
+def _start_scrape_thread(location, max_images, skip_images=0):
     """Launch the actual scrape in a daemon thread."""
     thread = threading.Thread(
         target=background_scrape_task,
-        args=(location, max_images),
+        args=(location, max_images, skip_images),
         daemon=True
     )
     thread.start()
 
 
-def background_scrape_task(location, max_images):
+def background_scrape_task(location, max_images, skip_images=0):
     """
     The main scraping worker.
     Acquires the concurrency semaphore before starting Chrome,
@@ -82,7 +82,7 @@ def background_scrape_task(location, max_images):
                 jobs[location]['started_at'] = datetime.now()
                 jobs[location]['queue_position'] = None
 
-        app.logger.info(f"[JOB - {location}] Starting scraper (slot acquired).")
+        app.logger.info(f"[JOB - {location}] Starting scraper (slot acquired) with skip_images={skip_images}.")
 
         # Callback: called by the scraper each time a new image URL is found
         def on_image_found(url):
@@ -113,7 +113,7 @@ def background_scrape_task(location, max_images):
             timeout=30,
             save_csv=False
         )
-        scraper.extract_urls_only(location, max_images=max_images, callback=on_image_found)
+        scraper.extract_urls_only(location, max_images=max_images, callback=on_image_found, skip_images=skip_images)
 
         with jobs_lock:
             if location in jobs:
@@ -156,6 +156,12 @@ def scrape():
     except ValueError:
         max_images = 20
 
+    skip_images_str = request.args.get('skip_images', '0')
+    try:
+        skip_images = int(skip_images_str)
+    except ValueError:
+        skip_images = 0
+
     force_refresh = request.args.get('refresh', '0') == '1'
 
     with jobs_lock:
@@ -166,36 +172,41 @@ def scrape():
             # How many slots are currently free (read under jobs_lock for consistency)
             slots_free = scraper_semaphore._value
 
+            # If skip_images > 0, preserve already scraped images so we append to them
+            existing_images = []
+            if skip_images > 0 and job and 'images' in job:
+                existing_images = job['images']
+
             if slots_free > 0:
                 # A slot is available — start immediately
-                app.logger.info(f"[SCRAPE] Slot available, starting '{location}' immediately.")
+                app.logger.info(f"[SCRAPE] Slot available, starting '{location}' immediately (skip_images={skip_images}).")
                 jobs[location] = {
                     'status': 'running',
-                    'images': [],
+                    'images': existing_images,
                     'error': None,
                     'queued_at': datetime.now(),
                     'started_at': datetime.now(),
                     'completed_at': None,
                     'queue_position': None,
                 }
-                _start_scrape_thread(location, max_images)
+                _start_scrape_thread(location, max_images, skip_images)
             else:
                 # All slots busy — enqueue
                 queue_pos = pending_queue.qsize() + 1
                 app.logger.info(
                     f"[SCRAPE] All {MAX_CONCURRENT_SCRAPERS} slots busy. "
-                    f"Queuing '{location}' at position #{queue_pos}."
+                    f"Queuing '{location}' at position #{queue_pos} (skip_images={skip_images})."
                 )
                 jobs[location] = {
                     'status': 'queued',
-                    'images': [],
+                    'images': existing_images,
                     'error': None,
                     'queued_at': datetime.now(),
                     'started_at': None,
                     'completed_at': None,
                     'queue_position': queue_pos,
                 }
-                pending_queue.put((location, max_images))
+                pending_queue.put((location, max_images, skip_images))
 
             job = jobs[location]
 

@@ -117,14 +117,24 @@ class GoogleMapsImageScraper:
         # Setup Chrome options
         chrome_options = Options()
         if headless:
-            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--headless=new")  # modern headless: faster & more accurate
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
         chrome_options.add_argument("--window-size=1920,1080")
-        
-        # Enable user agent to avoid detection
-        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+        # Performance: disable unused browser subsystems
+        chrome_options.add_argument("--disable-extensions")
+        chrome_options.add_argument("--disable-default-apps")
+        chrome_options.add_argument("--no-first-run")
+        chrome_options.add_argument("--disable-background-networking")
+        chrome_options.add_argument("--disable-background-timer-throttling")
+        chrome_options.add_argument("--disable-renderer-backgrounding")
+        chrome_options.add_argument("--disable-sync")
+        chrome_options.add_argument("--disable-translate")
+        chrome_options.add_argument("--metrics-recording-only")
+        chrome_options.add_argument("--mute-audio")
+        # User agent
+        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         
         # Initialize WebDriver with multiple fallback approaches
         self.driver = None
@@ -383,8 +393,8 @@ class GoogleMapsImageScraper:
             self.driver.get("https://www.google.com/maps")
             logger.info(f"Searching for location: {location_name}")
             
-            # Add a brief wait for page to load completely
-            time.sleep(3)
+            # Brief buffer for page init
+            time.sleep(1)
             
             # Wait for the search box to be present and click on it
             search_box = WebDriverWait(self.driver, self.timeout).until(
@@ -394,12 +404,12 @@ class GoogleMapsImageScraper:
             search_box.send_keys(location_name)
             search_box.send_keys(Keys.ENTER)
             
-            # Add delay after search to allow results to load
-            time.sleep(3)
+            # Short delay after search to allow results to load
+            # Short delay after search to allow results to load (2s is safe minimum)
+            time.sleep(2)
             
             # Check if we're directly on the place page (when there's a direct match)
             try:
-                # Check if place name is visible in the header/title
                 place_header = WebDriverWait(self.driver, 5).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "h1.DUwDvf, div.fontHeadlineLarge, div[role='heading']"))
                 )
@@ -411,34 +421,48 @@ class GoogleMapsImageScraper:
                 
             # Try to find and click on the first result with multiple approaches
             selectors_to_try = [
-                # Current Google Maps selectors
-                "div.Nv2PK, div.hfpxzc, a.hfpxzc, div[jsaction*='placecard.card']",
+                # Current Google Maps result card selectors
+                "div.Nv2PK a.hfpxzc",
+                "a.hfpxzc",
+                "div.Nv2PK",
                 # Backup selectors
-                "div[role='article'], a[jsaction*='placepage'], div.section-result-content",
-                # Generic clickable elements containing the location name (case insensitive)
-                f"//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{location_name.lower()}')]",
-                f"//div[@role='article' and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{location_name.lower()}')]"
+                "div[jsaction*='placecard']",
+                "div[data-item-id]",
+                "div[role='article']",
+                "a[jsaction*='placepage']",
+                "div.section-result-content",
             ]
             
             for selector in selectors_to_try:
                 try:
-                    if selector.startswith("//"):  # XPath selector
-                        element = WebDriverWait(self.driver, 5).until(
-                            EC.element_to_be_clickable((By.XPATH, selector))
-                        )
-                    else:  # CSS selector
-                        element = WebDriverWait(self.driver, 5).until(
-                            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                        )
-                    # Scroll element into view for better clicking
+                    element = WebDriverWait(self.driver, 4).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    )
                     self.driver.execute_script("arguments[0].scrollIntoView(true);", element)
-                    time.sleep(1)
-                    element.click()
+                    time.sleep(0.3)
+                    self.driver.execute_script("arguments[0].click();", element)
                     logger.info(f"Location found and clicked with selector: {selector}")
-                    time.sleep(3)  # Wait for place page to load
+                    time.sleep(1.5)  # Wait for place page to load
                     return True
                 except (TimeoutException, NoSuchElementException, ElementClickInterceptedException):
                     continue
+            
+            # JS fallback: grab the very first clickable result card in the DOM
+            try:
+                clicked = self.driver.execute_script("""
+                    const first = document.querySelector(
+                        'div.Nv2PK a.hfpxzc, a.hfpxzc, div[data-item-id] a, div.Nv2PK'
+                    );
+                    if (first) { first.click(); return true; }
+                    return false;
+                """)
+                if clicked:
+                    logger.info("Clicked first result via JS fallback")
+                    time.sleep(1.5)
+                    return True
+            except Exception:
+                pass
+
             
             # If we still haven't found a result, check if we're already on a place page
             # Sometimes Google Maps navigates directly to the place page for exact matches
@@ -469,8 +493,8 @@ class GoogleMapsImageScraper:
             bool: True if photos section was opened, False otherwise
         """
         try:
-            # Add initial delay to ensure page is fully loaded
-            time.sleep(3)
+            # Short delay to ensure page is fully loaded
+            time.sleep(1)
             
             # Try multiple approaches to find and click the photos section
             selectors_to_try = [
@@ -503,20 +527,20 @@ class GoogleMapsImageScraper:
                             if element.is_displayed():
                                 # Scroll element into view
                                 self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-                                time.sleep(1)
+                                time.sleep(0.5)
                                 
                                 # Try direct click
                                 try:
                                     element.click()
                                     logger.info(f"Photos section opened using selector: {selector}")
-                                    time.sleep(3)  # Wait for photos to load
+                                    time.sleep(1.5)  # Wait for photos to load
                                     return True
                                 except ElementClickInterceptedException:
                                     # Try JavaScript click if direct click fails
                                     try:
                                         self.driver.execute_script("arguments[0].click();", element)
                                         logger.info(f"Photos section opened using JavaScript click with selector: {selector}")
-                                        time.sleep(3)
+                                        time.sleep(1.5)
                                         return True
                                     except Exception:
                                         continue
@@ -540,7 +564,7 @@ class GoogleMapsImageScraper:
             logger.error(f"Error opening photos section: {str(e)}")
             return False
 
-    def extract_image_urls(self, max_images=None, location_name=None, show_progress=False, callback=None):
+    def extract_image_urls(self, max_images=None, location_name=None, show_progress=False, callback=None, skip_images=0):
         """
         Extract all image URLs from the photos section
         
@@ -548,11 +572,14 @@ class GoogleMapsImageScraper:
             max_images (int, optional): Maximum number of images to extract
             location_name (str, optional): Name of the location for CSV
             show_progress (bool): Whether to show detailed progress logging
+            callback (callable, optional): Callback function for each new image URL
+            skip_images (int): Number of images to skip from start of gallery
             
         Returns:
             list: List of image URLs
         """
         image_urls = set()
+        images_seen = 0
         last_count = 0
         scroll_attempts = 0
         max_scroll_attempts = 30
@@ -712,8 +739,8 @@ class GoogleMapsImageScraper:
                 found_image = False
                 for selector in img_selectors:
                     try:
-                        # Use WebDriverWait to ensure elements are present
-                        wait = WebDriverWait(self.driver, 5)
+                        # Use a very short timeout since we already slept after clicking next
+                        wait = WebDriverWait(self.driver, 0.4)
                         img_elements = wait.until(
                             EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector))
                         )
@@ -731,13 +758,13 @@ class GoogleMapsImageScraper:
                                     if retry < 2:  # Last retry
                                         logger.debug(f"Stale reference when getting src, retry {retry+1}/3")
                                         # Re-find element
-                                        wait = WebDriverWait(self.driver, 5)
+                                        wait = WebDriverWait(self.driver, 0.4)
                                         img_elements = wait.until(
                                             EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector))
                                         )
                                         if img_elements:
                                             img_element = img_elements[0]
-                                        time.sleep(1)
+                                        time.sleep(0.2)
                                     else:
                                         current_url = None
                                 except Exception:
@@ -751,6 +778,13 @@ class GoogleMapsImageScraper:
                                 
                                 # Only add if it's a new URL
                                 if high_res_url not in image_urls:
+                                    images_seen += 1
+                                    if images_seen <= skip_images:
+                                        # Skip this image! We don't save it or fire callback
+                                        found_image = True
+                                        consecutive_errors = 0
+                                        break
+
                                     image_urls.add(high_res_url)
                                     if callback:
                                         callback(high_res_url)
@@ -792,6 +826,13 @@ class GoogleMapsImageScraper:
                                 
                                 # Only add if it's a new URL
                                 if high_res_url not in image_urls:
+                                    images_seen += 1
+                                    if images_seen <= skip_images:
+                                        # Skip this image!
+                                        found_image = True
+                                        consecutive_errors = 0
+                                        continue
+
                                     image_urls.add(high_res_url)
                                     if callback:
                                         callback(high_res_url)
@@ -840,11 +881,11 @@ class GoogleMapsImageScraper:
                 for selector in next_button_selectors:
                     try:
                         if selector.startswith("//"):  # XPath selector
-                            next_buttons = WebDriverWait(self.driver, 5).until(
+                            next_buttons = WebDriverWait(self.driver, 0.4).until(
                                 EC.presence_of_all_elements_located((By.XPATH, selector))
                             )
                         else:  # CSS selector
-                            next_buttons = WebDriverWait(self.driver, 5).until(
+                            next_buttons = WebDriverWait(self.driver, 0.4).until(
                                 EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector))
                             )
                             
@@ -856,7 +897,7 @@ class GoogleMapsImageScraper:
                                 try:
                                     # Scroll button into view first
                                     self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-                                    time.sleep(1)
+                                    time.sleep(0.2)
                                     
                                     # Try to click with fresh reference after scrolling
                                     if selector.startswith("//"):
@@ -868,13 +909,13 @@ class GoogleMapsImageScraper:
                                         if refreshed_btn.is_displayed():
                                             refreshed_btn.click()
                                             next_clicked = True
-                                            time.sleep(2)  # Increased wait time
+                                            time.sleep(0.7)  # reduced: image usually loads < 1s
                                             break
                                 except ElementClickInterceptedException:
                                     # Try JavaScript click
                                     self.driver.execute_script("arguments[0].click();", btn)
                                     next_clicked = True
-                                    time.sleep(2)
+                                    time.sleep(0.7)
                                     break
                                 except StaleElementReferenceException:
                                     logger.debug("Stale element when clicking next, retrying with fresh elements")
@@ -910,14 +951,14 @@ class GoogleMapsImageScraper:
             except StaleElementReferenceException:
                 logger.warning("Stale element reference, retrying...")
                 consecutive_errors += 1
-                time.sleep(2)
+                time.sleep(0.5)
                 if consecutive_errors >= max_consecutive_errors:
                     logger.warning("Too many consecutive stale element errors, stopping extraction")
                     break
             except Exception as e:
                 logger.error(f"Unexpected error during image extraction: {str(e)}")
                 consecutive_errors += 1
-                time.sleep(2)
+                time.sleep(0.5)
                 if consecutive_errors >= max_consecutive_errors:
                     logger.warning("Too many consecutive errors, stopping extraction")
                     break
@@ -1205,7 +1246,7 @@ class GoogleMapsImageScraper:
             # Close the browser
             self.close()
                 
-    def extract_urls_only(self, location_name, max_images=None, show_progress=False, callback=None):
+    def extract_urls_only(self, location_name, max_images=None, show_progress=False, callback=None, skip_images=0):
         """
         Extract image URLs for a location without downloading
         
@@ -1214,6 +1255,7 @@ class GoogleMapsImageScraper:
             max_images (int, optional): Maximum number of images to extract
             show_progress (bool): Whether to show detailed progress logging
             callback (callable, optional): Callback function for each new image URL
+            skip_images (int): Number of images to skip from start of gallery
             
         Returns:
             list: List of image URLs, empty list if failed
@@ -1227,7 +1269,7 @@ class GoogleMapsImageScraper:
                 return []
                 
             # Wait for the location page to load
-            time.sleep(3)
+            time.sleep(1)
             
             # Open photos section
             if not self.open_photos_section():
@@ -1238,7 +1280,7 @@ class GoogleMapsImageScraper:
             original_save_csv = self.save_csv
             self.save_csv = False  # Temporarily disable CSV
             
-            image_urls = self.extract_image_urls(max_images, location_name, show_progress, callback=callback)
+            image_urls = self.extract_image_urls(max_images, location_name, show_progress, callback=callback, skip_images=skip_images)
             
             self.save_csv = original_save_csv  # Restore original setting
             
@@ -1252,6 +1294,216 @@ class GoogleMapsImageScraper:
         except Exception as e:
             logger.error(f"Error extracting URLs for {location_name}: {str(e)}")
             return []
+
+    def fast_extract_urls(self, location_name, max_images=20, callback=None):
+        """
+        Fast URL extraction using photo-grid scrolling + bulk JS extraction.
+        ~5-10x faster than extract_urls_only — no per-image "Next" clicking.
+
+        Strategy:
+          1. Search → place page  (smart WebDriverWait instead of fixed sleeps)
+          2. Click Photos tab     (lands on the thumbnail grid, not the gallery)
+          3. Scroll the grid      (loads more images into the DOM)
+          4. One JS call          (grabs ALL googleusercontent URLs at once)
+          5. Transform + return   (converts to high-res w0-h0-k-no format)
+
+        Falls back to the original extract_urls_only on any failure.
+        """
+        image_urls = set()
+
+        try:
+            logger.info(f"[FAST] Starting fast extraction for: {location_name}")
+
+            # ── 1. Navigate to Google Maps and search ────────────────────────
+            self.driver.get("https://www.google.com/maps")
+
+            search_box = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "input#searchboxinput, input[name='q']")
+                )
+            )
+            search_box.clear()
+            search_box.send_keys(location_name)
+            search_box.send_keys(Keys.ENTER)
+
+            # Smart wait: look for place-page heading OR search result cards
+            time.sleep(1.5)  # minimal buffer for Maps routing
+
+            # ── 2. Land on the place page ────────────────────────────────────
+            try:
+                WebDriverWait(self.driver, 4).until(
+                    EC.presence_of_element_located(
+                        (By.CSS_SELECTOR, "h1.DUwDvf, div.fontHeadlineLarge")
+                    )
+                )
+                logger.info("[FAST] Direct place page loaded")
+            except TimeoutException:
+                # Search results page — click first result
+                logger.info("[FAST] Search results page, clicking first result")
+                try:
+                    result = WebDriverWait(self.driver, 5).until(
+                        EC.element_to_be_clickable(
+                            (By.CSS_SELECTOR, "div.Nv2PK, a.hfpxzc, div[jsaction*='placecard']")
+                        )
+                    )
+                    result.click()
+                    WebDriverWait(self.driver, 6).until(
+                        EC.presence_of_element_located(
+                            (By.CSS_SELECTOR, "h1.DUwDvf, div.fontHeadlineLarge")
+                        )
+                    )
+                except TimeoutException:
+                    logger.warning("[FAST] Could not confirm place page, continuing anyway")
+
+            # ── 3. Click the Photos tab ───────────────────────────────────────
+            photos_clicked = False
+            photo_tab_selectors = [
+                "button[aria-label*='photo' i]",
+                "button[data-item-id*='photo' i]",
+                "a[aria-label*='photo' i]",
+                "button[jsaction*='photo']",
+                "button[aria-label*='Photos']",
+            ]
+
+            for selector in photo_tab_selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    for el in elements:
+                        if el.is_displayed():
+                            self.driver.execute_script("arguments[0].click();", el)
+                            photos_clicked = True
+                            logger.info(f"[FAST] Clicked Photos tab: {selector}")
+                            break
+                    if photos_clicked:
+                        break
+                except Exception:
+                    continue
+
+            if not photos_clicked:
+                try:
+                    btn = WebDriverWait(self.driver, 3).until(
+                        EC.element_to_be_clickable((By.XPATH,
+                            "//button[.//div[contains(translate(text(),'PHOTOS','photos'),'photos')]]"
+                        ))
+                    )
+                    self.driver.execute_script("arguments[0].click();", btn)
+                    photos_clicked = True
+                    logger.info("[FAST] Clicked Photos tab via XPath")
+                except Exception:
+                    logger.warning("[FAST] Photos tab not found, extracting from current page")
+
+            # Wait for photo grid to render (needs enough time for lazy images)
+            time.sleep(2.5)
+
+            # ── 4. Scroll the photo grid to load more images ─────────────────
+            scroll_rounds = max(3, (max_images // 5) + 1)
+
+            scroll_container = None
+            for sel in ["div.m6QErb.DxyBCb", "div.m6QErb", "div[role='main']"]:
+                els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                if els:
+                    scroll_container = els[0]
+                    break
+
+            for _ in range(scroll_rounds):
+                try:
+                    if scroll_container:
+                        self.driver.execute_script(
+                            "arguments[0].scrollTop += 3000;", scroll_container
+                        )
+                    # Also scroll window — catches cases where container isn't found
+                    self.driver.execute_script("window.scrollBy(0, 3000);")
+                    time.sleep(0.8)  # allow lazy-loaded images to appear
+                except Exception:
+                    pass
+
+            # ── 5. Comprehensive bulk URL extraction via JS ───────────────────
+            # Google Maps uses several rendering strategies: img src, srcset,
+            # data-src (lazy load), and background-image CSS. Capture all of them.
+            all_raw = self.driver.execute_script("""
+                const urls = new Set();
+                const isGoog = u => u && (u.includes('googleusercontent') || u.includes('lh3.google') || u.includes('lh5.google') || u.includes('lh6.google'));
+
+                // <img> — src, srcset, data-src, data-original
+                document.querySelectorAll('img').forEach(img => {
+                    if (isGoog(img.src)) urls.add(img.src);
+                    if (isGoog(img.dataset.src)) urls.add(img.dataset.src);
+                    if (isGoog(img.dataset.original)) urls.add(img.dataset.original);
+                    if (img.srcset) {
+                        img.srcset.split(',').forEach(s => {
+                            const u = s.trim().split(' ')[0];
+                            if (isGoog(u)) urls.add(u);
+                        });
+                    }
+                });
+
+                // background-image in inline style
+                document.querySelectorAll('[style*="background"]').forEach(el => {
+                    const bg = el.style.backgroundImage || '';
+                    const m = bg.match(/url\\(["']?(https?:[^"')]+)["']?\\)/);
+                    if (m && isGoog(m[1])) urls.add(m[1]);
+                });
+
+                // data attributes with google URLs
+                document.querySelectorAll('[data-src],[data-original],[data-bg]').forEach(el => {
+                    ['data-src','data-original','data-bg'].forEach(attr => {
+                        const v = el.getAttribute(attr);
+                        if (isGoog(v)) urls.add(v);
+                    });
+                });
+
+                return Array.from(urls);
+            """) or []
+
+            # Diagnostic: log current URL + total img count to aid debugging
+            try:
+                page_url = self.driver.current_url
+                total_imgs = self.driver.execute_script(
+                    "return document.querySelectorAll('img').length;"
+                )
+                logger.info(
+                    f"[FAST] Page URL: {page_url[:80]}... | Total <img> tags: {total_imgs}"
+                )
+            except Exception:
+                pass
+
+            logger.info(f"[FAST] Raw URLs found: {len(all_raw)}")
+
+            # ── 6. Deduplicate, convert to high-res, fire callback ────────────
+            for url in all_raw:
+                if not url or not any(d in url for d in ('googleusercontent', 'lh3.google', 'lh5.google', 'lh6.google')):
+                    continue
+
+                high_res = re.sub(
+                    r'=(w\d+-h\d+|w\d+|h\d+|s\d+)(.*)', '=w0-h0-k-no', url
+                )
+
+                if high_res not in image_urls:
+                    image_urls.add(high_res)
+                    if callback:
+                        callback(high_res)
+
+                    if max_images and len(image_urls) >= max_images:
+                        break
+
+
+            logger.info(
+                f"[FAST] Extracted {len(image_urls)} unique images for '{location_name}'"
+            )
+
+            # Fall back to the original method if we found nothing
+            if not image_urls:
+                logger.warning(
+                    "[FAST] No images found via fast method — falling back to gallery extraction"
+                )
+                return self.extract_urls_only(location_name, max_images, callback=callback)
+
+            return list(image_urls)
+
+        except Exception as e:
+            logger.error(f"[FAST] Fast extraction failed for '{location_name}': {e}")
+            logger.info("[FAST] Falling back to standard gallery extraction...")
+            return self.extract_urls_only(location_name, max_images, callback=callback)
 
     def process_locations_list(self, locations_list, max_images=None, show_progress=True):
         """
