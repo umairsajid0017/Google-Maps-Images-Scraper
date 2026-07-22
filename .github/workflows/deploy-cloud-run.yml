@@ -9,6 +9,7 @@ on:
 env:
   SERVICE: google-maps-images-scraper
   REGION: us-central1
+  ARTIFACT_REPOSITORY: cloud-run-source-deploy
 
 jobs:
   deploy:
@@ -28,13 +29,46 @@ jobs:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
 
-      - name: Deploy from source
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Enable required services
+        run: |
+          gcloud services enable \
+            artifactregistry.googleapis.com \
+            cloudbuild.googleapis.com \
+            run.googleapis.com
+
+      - name: Ensure Artifact Registry repository exists
+        run: |
+          gcloud artifacts repositories describe "$ARTIFACT_REPOSITORY" \
+            --project "${{ secrets.GCP_PROJECT_ID }}" \
+            --location "$REGION" \
+            --format "value(name)" || \
+          gcloud artifacts repositories create "$ARTIFACT_REPOSITORY" \
+            --project "${{ secrets.GCP_PROJECT_ID }}" \
+            --repository-format docker \
+            --location "$REGION"
+
+      - name: Configure Docker authentication
+        run: gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
+
+      - name: Build Docker image
+        run: |
+          IMAGE="$REGION-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/$ARTIFACT_REPOSITORY/$SERVICE:${{ github.sha }}"
+          docker build -t "$IMAGE" .
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Push Docker image
+        run: docker push "$IMAGE"
+
+      - name: Deploy Docker image
         id: deploy
         uses: google-github-actions/deploy-cloudrun@v2
         with:
           service: ${{ env.SERVICE }}
           region: ${{ env.REGION }}
-          source: .
+          image: ${{ env.IMAGE }}
           flags: --allow-unauthenticated
 
       - name: Show service URL

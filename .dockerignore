@@ -1,0 +1,13 @@
+.git
+.gitignore
+__pycache__/
+*.pyc
+downloaded_images/
+drivers/
+gmaps_scraper.log
+venv/
+.venv/
+.idea/
+.vscode/
+*.json
+!test.json
