@@ -145,23 +145,27 @@ class GoogleMapsImageScraper:
             chrome_driver_path = ChromeDriverManager().install()
             
             # Fix the common webdriver-manager path issue
-            if "THIRD_PARTY_NOTICES" in chrome_driver_path or not chrome_driver_path.endswith(".exe"):
-                # Try to find the actual chromedriver.exe in the same directory
+            import platform
+            is_windows = platform.system() == "Windows"
+            exe_ext = ".exe" if is_windows else ""
+            
+            if "THIRD_PARTY_NOTICES" in chrome_driver_path or (is_windows and not chrome_driver_path.endswith(".exe")):
+                # Try to find the actual chromedriver in the same directory
                 import glob
                 driver_dir = os.path.dirname(chrome_driver_path)
-                possible_paths = glob.glob(os.path.join(driver_dir, "**/chromedriver.exe"), recursive=True)
+                possible_paths = glob.glob(os.path.join(driver_dir, f"**/chromedriver{exe_ext}"), recursive=True)
                 if possible_paths:
                     chrome_driver_path = possible_paths[0]
                     logger.info(f"Fixed ChromeDriver path to: {chrome_driver_path}")
                 else:
                     # Try parent directories
                     parent_dir = os.path.dirname(driver_dir)
-                    possible_paths = glob.glob(os.path.join(parent_dir, "**/chromedriver.exe"), recursive=True)
+                    possible_paths = glob.glob(os.path.join(parent_dir, f"**/chromedriver{exe_ext}"), recursive=True)
                     if possible_paths:
                         chrome_driver_path = possible_paths[0]
                         logger.info(f"Found ChromeDriver in parent directory: {chrome_driver_path}")
                     else:
-                        raise Exception("Could not locate chromedriver.exe")
+                        raise Exception(f"Could not locate chromedriver{exe_ext}")
             
             self.driver = webdriver.Chrome(
                 service=Service(chrome_driver_path),
@@ -579,6 +583,7 @@ class GoogleMapsImageScraper:
             list: List of image URLs
         """
         image_urls = set()
+        skipped_urls = set()
         images_seen = 0
         last_count = 0
         scroll_attempts = 0
@@ -777,34 +782,42 @@ class GoogleMapsImageScraper:
                                 high_res_url = re.sub(r'=(w\d+-h\d+|w\d+|h\d+|s\d+)(.*)', '=w0-h0-k-no', current_url)
                                 
                                 # Only add if it's a new URL
-                                if high_res_url not in image_urls:
+                                if high_res_url not in image_urls and high_res_url not in skipped_urls:
                                     images_seen += 1
                                     if images_seen <= skip_images:
                                         # Skip this image! We don't save it or fire callback
                                         found_image = True
                                         consecutive_errors = 0
                                         break
-
-                                    image_urls.add(high_res_url)
+ 
+                                    accepted = True
                                     if callback:
-                                        callback(high_res_url)
-                                    logger.debug(f"Added image URL: {high_res_url}")
+                                        accepted = callback(high_res_url)
                                     
-                                    # Show progress
-                                    if show_progress:
-                                        if max_images:
-                                            print(f"Images Extracted: {url_index}/{max_images}")
-                                        else:
-                                            print(f"Images Extracted: {url_index}")
-                                    
-                                    # Save URL to CSV in real-time
-                                    if csv_path:
-                                        self.save_url_to_csv(csv_path, high_res_url, url_index)
+                                    if accepted:
+                                        image_urls.add(high_res_url)
+                                        logger.debug(f"Added image URL: {high_res_url}")
                                         
-                                    url_index += 1
-                                    found_image = True
-                                    consecutive_errors = 0  # Reset error counter on success
-                                    break
+                                        # Show progress
+                                        if show_progress:
+                                            if max_images:
+                                                print(f"Images Extracted: {url_index}/{max_images}")
+                                            else:
+                                                print(f"Images Extracted: {url_index}")
+                                        
+                                        # Save URL to CSV in real-time
+                                        if csv_path:
+                                            self.save_url_to_csv(csv_path, high_res_url, url_index)
+                                            
+                                        url_index += 1
+                                        found_image = True
+                                        consecutive_errors = 0  # Reset error counter on success
+                                        break
+                                    else:
+                                        skipped_urls.add(high_res_url)
+                                        found_image = True
+                                        consecutive_errors = 0
+                                        break
                     except Exception as e:
                         logger.debug(f"Error with image selector {selector}: {str(e)}")
                         continue
@@ -825,32 +838,39 @@ class GoogleMapsImageScraper:
                                 high_res_url = re.sub(r'=(w\d+-h\d+|w\d+|h\d+|s\d+)(.*)', '=w0-h0-k-no', url)
                                 
                                 # Only add if it's a new URL
-                                if high_res_url not in image_urls:
+                                if high_res_url not in image_urls and high_res_url not in skipped_urls:
                                     images_seen += 1
                                     if images_seen <= skip_images:
                                         # Skip this image!
                                         found_image = True
                                         consecutive_errors = 0
                                         continue
-
-                                    image_urls.add(high_res_url)
+ 
+                                    accepted = True
                                     if callback:
-                                        callback(high_res_url)
+                                        accepted = callback(high_res_url)
                                     
-                                    # Show progress
-                                    if show_progress:
-                                        if max_images:
-                                            print(f"Images Extracted: {url_index}/{max_images}")
-                                        else:
-                                            print(f"Images Extracted: {url_index}")
-                                    
-                                    # Save URL to CSV in real-time
-                                    if csv_path:
-                                        self.save_url_to_csv(csv_path, high_res_url, url_index)
+                                    if accepted:
+                                        image_urls.add(high_res_url)
                                         
-                                    url_index += 1
-                                    found_image = True
-                                    consecutive_errors = 0  # Reset error counter on success
+                                        # Show progress
+                                        if show_progress:
+                                            if max_images:
+                                                print(f"Images Extracted: {url_index}/{max_images}")
+                                            else:
+                                                print(f"Images Extracted: {url_index}")
+                                        
+                                        # Save URL to CSV in real-time
+                                        if csv_path:
+                                            self.save_url_to_csv(csv_path, high_res_url, url_index)
+                                            
+                                        url_index += 1
+                                        found_image = True
+                                        consecutive_errors = 0  # Reset error counter on success
+                                    else:
+                                        skipped_urls.add(high_res_url)
+                                        found_image = True
+                                        consecutive_errors = 0
                     except Exception as e:
                         logger.debug(f"JavaScript image extraction failed: {str(e)}")
                 
@@ -982,6 +1002,7 @@ class GoogleMapsImageScraper:
             list: List of image URLs
         """
         image_urls = set()
+        skipped_urls = set()
         url_index = 1  # For CSV indexing
         logger.info("Attempting to extract images directly from the page")
         
@@ -997,15 +1018,18 @@ class GoogleMapsImageScraper:
                 if "googleusercontent.com" in url:
                     # Transform URL to get the highest resolution (w0-h0-k-no gets original image size with no restrictions)
                     high_res_url = re.sub(r'=(w\d+-h\d+|w\d+|h\d+|s\d+)(.*)', '=w0-h0-k-no', url)
-                    if high_res_url not in image_urls:
-                        image_urls.add(high_res_url)
+                    if high_res_url not in image_urls and high_res_url not in skipped_urls:
+                        accepted = True
                         if callback:
-                            callback(high_res_url)
-                    
-                    # Save to CSV if needed
-                    if csv_path:
-                        self.save_url_to_csv(csv_path, high_res_url, url_index)
-                        url_index += 1
+                            accepted = callback(high_res_url)
+                        if accepted:
+                            image_urls.add(high_res_url)
+                            # Save to CSV if needed
+                            if csv_path:
+                                self.save_url_to_csv(csv_path, high_res_url, url_index)
+                                url_index += 1
+                        else:
+                            skipped_urls.add(high_res_url)
             
             logger.info(f"Found {len(image_urls)} images using JavaScript extraction")
             
@@ -1028,15 +1052,18 @@ class GoogleMapsImageScraper:
                                     if url and "googleusercontent.com" in url:
                                         # Transform URL to get the highest resolution (w0-h0-k-no gets original image size with no restrictions)
                                         high_res_url = re.sub(r'=(w\d+-h\d+|w\d+|h\d+|s\d+)(.*)', '=w0-h0-k-no', url)
-                                        if high_res_url not in image_urls:
-                                            image_urls.add(high_res_url)
+                                        if high_res_url not in image_urls and high_res_url not in skipped_urls:
+                                            accepted = True
                                             if callback:
-                                                callback(high_res_url)
-                                            
-                                            # Save to CSV if needed
-                                            if csv_path:
-                                                self.save_url_to_csv(csv_path, high_res_url, url_index)
-                                                url_index += 1
+                                                accepted = callback(high_res_url)
+                                            if accepted:
+                                                image_urls.add(high_res_url)
+                                                # Save to CSV if needed
+                                                if csv_path:
+                                                    self.save_url_to_csv(csv_path, high_res_url, url_index)
+                                                    url_index += 1
+                                            else:
+                                                skipped_urls.add(high_res_url)
                             except StaleElementReferenceException:
                                 continue
                     except Exception:

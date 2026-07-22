@@ -4,6 +4,8 @@ import threading
 import queue
 from datetime import datetime
 from flask import Flask, request, jsonify
+import requests
+from PIL import Image
 
 # Add current directory to path
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -19,6 +21,10 @@ app = Flask(__name__)
 # Each active job spins up a headless Chrome instance (~300–500 MB RAM each).
 # Raise this only if your machine has plenty of RAM; lower it if you see crashes.
 MAX_CONCURRENT_SCRAPERS = 3
+
+# ─── Sizing Configuration ─────────────────────────────────────────────────────
+# Minimum width required for images to be scraped and returned to the admin panel.
+MIN_IMAGE_WIDTH = 2000
 
 # Semaphore that limits how many jobs can run simultaneously
 scraper_semaphore = threading.Semaphore(MAX_CONCURRENT_SCRAPERS)
@@ -86,9 +92,37 @@ def background_scrape_task(location, max_images, skip_images=0):
 
         # Callback: called by the scraper each time a new image URL is found
         def on_image_found(url):
+            width = 0
+            height = 0
+            try:
+                # Perform a fast streamed HTTP request to check dimensions
+                response = requests.get(url, stream=True, timeout=5)
+                if response.status_code == 200:
+                    img = Image.open(response.raw)
+                    width = img.width
+                    height = img.height
+                    if width < MIN_IMAGE_WIDTH:
+                        app.logger.info(
+                            f"[JOB - {location}] Skipped image due to width "
+                            f"({width} < {MIN_IMAGE_WIDTH}): {url[:60]}..."
+                        )
+                        return False
+                else:
+                    app.logger.warning(
+                        f"[JOB - {location}] Failed to load image status "
+                        f"{response.status_code} for sizing verification: {url[:60]}..."
+                    )
+                    return False
+            except Exception as e:
+                app.logger.warning(
+                    f"[JOB - {location}] Error checking image width: {e} "
+                    f"for: {url[:60]}..."
+                )
+                return False
+
             with jobs_lock:
                 if location not in jobs:
-                    return
+                    return False
                 if "googleusercontent.com" in url:
                     thumb_url = url.replace('=w0-h0-k-no', '=w300-h300-k-no')
                 else:
@@ -98,7 +132,9 @@ def background_scrape_task(location, max_images, skip_images=0):
                     'url': url,
                     'thumbUrl': thumb_url,
                     'description': f'Google Maps Photo of {location}',
-                    'author': 'Google Maps User'
+                    'author': 'Google Maps User',
+                    'width': width,
+                    'height': height
                 }
 
                 if not any(x['url'] == url for x in jobs[location]['images']):
@@ -107,6 +143,7 @@ def background_scrape_task(location, max_images, skip_images=0):
                         f"[JOB - {location}] Found image "
                         f"#{len(jobs[location]['images'])}: {url[:60]}..."
                     )
+                return True
 
         scraper = GoogleMapsImageScraper(
             headless=True,
@@ -252,6 +289,8 @@ if __name__ == '__main__':
     app.logger.info(
         f"Starting scraper service — max concurrent jobs: {MAX_CONCURRENT_SCRAPERS}"
     )
-    app.run(host='127.0.0.1', port=5000, threaded=True)
+    port = int(os.environ.get('PORT', 5000))
+    host = os.environ.get('HOST', '0.0.0.0')
+    app.run(host=host, port=port, threaded=True)
 
 
